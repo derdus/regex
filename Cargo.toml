@@ -6,7 +6,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-lang/regex/tree/master/regex-syntax"
 documentation = "https://docs.rs/regex-syntax"
 description = "A regular expression parser."
-workspace = ".."
 edition = "2021"
 rust-version = "1.60.0"
 
