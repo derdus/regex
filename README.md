@@ -1,246 +1,96 @@
-regex
-=====
-This crate provides routines for searching strings for matches of a [regular
-expression] (aka "regex"). The regex syntax supported by this crate is similar
-to other regex engines, but it lacks several features that are not known how to
-implement efficiently. This includes, but is not limited to, look-around and
-backreferences. In exchange, all regex searches in this crate have worst case
-`O(m * n)` time complexity, where `m` is proportional to the size of the regex
-and `n` is proportional to the size of the string being searched.
-
-[regular expression]: https://en.wikipedia.org/wiki/Regular_expression
+regex-syntax
+============
+This crate provides a robust regular expression parser.
 
 [![Build status](https://github.com/rust-lang/regex/workflows/ci/badge.svg)](https://github.com/rust-lang/regex/actions)
-[![Crates.io](https://img.shields.io/crates/v/regex.svg)](https://crates.io/crates/regex)
+[![Crates.io](https://img.shields.io/crates/v/regex-syntax.svg)](https://crates.io/crates/regex-syntax)
+
 
 ### Documentation
 
-[Module documentation with examples](https://docs.rs/regex).
-The module documentation also includes a comprehensive description of the
-syntax supported.
+https://docs.rs/regex-syntax
 
-Documentation with examples for the various matching functions and iterators
-can be found on the
-[`Regex` type](https://docs.rs/regex/*/regex/struct.Regex.html).
 
-### Usage
+### Overview
 
-To bring this crate into your repository, either add `regex` to your
-`Cargo.toml`, or run `cargo add regex`.
+There are two primary types exported by this crate: `Ast` and `Hir`. The former
+is a faithful abstract syntax of a regular expression, and can convert regular
+expressions back to their concrete syntax while mostly preserving its original
+form. The latter type is a high level intermediate representation of a regular
+expression that is amenable to analysis and compilation into byte codes or
+automata. An `Hir` achieves this by drastically simplifying the syntactic
+structure of the regular expression. While an `Hir` can be converted back to
+its equivalent concrete syntax, the result is unlikely to resemble the original
+concrete syntax that produced the `Hir`.
 
-Here's a simple example that matches a date in YYYY-MM-DD format and prints the
-year, month and day:
 
-```rust
-use regex::Regex;
+### Example
 
-fn main() {
-    let re = Regex::new(r"(?x)
-(?P<year>\d{4})  # the year
--
-(?P<month>\d{2}) # the month
--
-(?P<day>\d{2})   # the day
-").unwrap();
-
-    let caps = re.captures("2010-03-14").unwrap();
-    assert_eq!("2010", &caps["year"]);
-    assert_eq!("03", &caps["month"]);
-    assert_eq!("14", &caps["day"]);
-}
-```
-
-If you have lots of dates in text that you'd like to iterate over, then it's
-easy to adapt the above example with an iterator:
+This example shows how to parse a pattern string into its HIR:
 
 ```rust
-use regex::Regex;
+use regex_syntax::{hir::Hir, parse};
 
-fn main() {
-    let re = Regex::new(r"(\d{4})-(\d{2})-(\d{2})").unwrap();
-    let hay = "On 2010-03-14, foo happened. On 2014-10-14, bar happened.";
-
-    let mut dates = vec![];
-    for (_, [year, month, day]) in re.captures_iter(hay).map(|c| c.extract()) {
-        dates.push((year, month, day));
-    }
-    assert_eq!(dates, vec![
-      ("2010", "03", "14"),
-      ("2014", "10", "14"),
-    ]);
-}
-```
-
-### Usage: Avoid compiling the same regex in a loop
-
-It is an anti-pattern to compile the same regular expression in a loop since
-compilation is typically expensive. (It takes anywhere from a few microseconds
-to a few **milliseconds** depending on the size of the regex.) Not only is
-compilation itself expensive, but this also prevents optimizations that reuse
-allocations internally to the matching engines.
-
-In Rust, it can sometimes be a pain to pass regular expressions around if
-they're used from inside a helper function. Instead, we recommend using the
-[`once_cell`](https://crates.io/crates/once_cell) crate to ensure that
-regular expressions are compiled exactly once. For example:
-
-```rust
-use {
-    once_cell::sync::Lazy,
-    regex::Regex,
-};
-
-fn some_helper_function(haystack: &str) -> bool {
-    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"...").unwrap());
-    RE.is_match(haystack)
-}
-
-fn main() {
-    assert!(some_helper_function("abc"));
-    assert!(!some_helper_function("ac"));
-}
-```
-
-Specifically, in this example, the regex will be compiled when it is used for
-the first time. On subsequent uses, it will reuse the previous compilation.
-
-### Usage: match regular expressions on `&[u8]`
-
-The main API of this crate (`regex::Regex`) requires the caller to pass a
-`&str` for searching. In Rust, an `&str` is required to be valid UTF-8, which
-means the main API can't be used for searching arbitrary bytes.
-
-To match on arbitrary bytes, use the `regex::bytes::Regex` API. The API is
-identical to the main API, except that it takes an `&[u8]` to search on instead
-of an `&str`. The `&[u8]` APIs also permit disabling Unicode mode in the regex
-even when the pattern would match invalid UTF-8. For example, `(?-u:.)` is
-not allowed in `regex::Regex` but is allowed in `regex::bytes::Regex` since
-`(?-u:.)` matches any byte except for `\n`. Conversely, `.` will match the
-UTF-8 encoding of any Unicode scalar value except for `\n`.
-
-This example shows how to find all null-terminated strings in a slice of bytes:
-
-```rust
-use regex::bytes::Regex;
-
-let re = Regex::new(r"(?-u)(?<cstr>[^\x00]+)\x00").unwrap();
-let text = b"foo\xFFbar\x00baz\x00";
-
-// Extract all of the strings without the null terminator from each match.
-// The unwrap is OK here since a match requires the `cstr` capture to match.
-let cstrs: Vec<&[u8]> =
-    re.captures_iter(text)
-      .map(|c| c.name("cstr").unwrap().as_bytes())
-      .collect();
-assert_eq!(vec![&b"foo\xFFbar"[..], &b"baz"[..]], cstrs);
-```
-
-Notice here that the `[^\x00]+` will match any *byte* except for `NUL`,
-including bytes like `\xFF` which are not valid UTF-8. When using the main API,
-`[^\x00]+` would instead match any valid UTF-8 sequence except for `NUL`.
-
-### Usage: match multiple regular expressions simultaneously
-
-This demonstrates how to use a `RegexSet` to match multiple (possibly
-overlapping) regular expressions in a single scan of the search text:
-
-```rust
-use regex::RegexSet;
-
-let set = RegexSet::new(&[
-    r"\w+",
-    r"\d+",
-    r"\pL+",
-    r"foo",
-    r"bar",
-    r"barfoo",
-    r"foobar",
-]).unwrap();
-
-// Iterate over and collect all of the matches.
-let matches: Vec<_> = set.matches("foobar").into_iter().collect();
-assert_eq!(matches, vec![0, 2, 3, 4, 6]);
-
-// You can also test whether a particular regex matched:
-let matches = set.matches("foobar");
-assert!(!matches.matched(5));
-assert!(matches.matched(6));
+let hir = parse("a|b").unwrap();
+assert_eq!(hir, Hir::alternation(vec![
+    Hir::literal("a".as_bytes()),
+    Hir::literal("b".as_bytes()),
+]));
 ```
 
 
-### Usage: regex internals as a library
+### Safety
 
-The [`regex-automata` directory](./regex-automata/) contains a crate that
-exposes all of the internal matching engines used by the `regex` crate. The
-idea is that the `regex` crate exposes a simple API for 99% of use cases, but
-`regex-automata` exposes oodles of customizable behaviors.
+This crate has no `unsafe` code and sets `forbid(unsafe_code)`. While it's
+possible this crate could use `unsafe` code in the future, the standard
+for doing so is extremely high. In general, most code in this crate is not
+performance critical, since it tends to be dwarfed by the time it takes to
+compile a regular expression into an automaton. Therefore, there is little need
+for extreme optimization, and therefore, use of `unsafe`.
 
-[Documentation for `regex-automata`.](https://docs.rs/regex-automata)
-
-
-### Usage: a regular expression parser
-
-This repository contains a crate that provides a well tested regular expression
-parser, abstract syntax and a high-level intermediate representation for
-convenient analysis. It provides no facilities for compilation or execution.
-This may be useful if you're implementing your own regex engine or otherwise
-need to do analysis on the syntax of a regular expression. It is otherwise not
-recommended for general use.
-
-[Documentation for `regex-syntax`.](https://docs.rs/regex-syntax)
+The standard for using `unsafe` in this crate is extremely high because this
+crate is intended to be reasonably safe to use with user supplied regular
+expressions. Therefore, while there may be bugs in the regex parser itself,
+they should _never_ result in memory unsafety unless there is either a bug
+in the compiler or the standard library. (Since `regex-syntax` has zero
+dependencies.)
 
 
 ### Crate features
 
-This crate comes with several features that permit tweaking the trade off
-between binary size, compilation time and runtime performance. Users of this
-crate can selectively disable Unicode tables, or choose from a variety of
-optimizations performed by this crate to disable.
-
-When all of these features are disabled, runtime match performance may be much
-worse, but if you're matching on short strings, or if high performance isn't
-necessary, then such a configuration is perfectly serviceable. To disable
-all such features, use the following `Cargo.toml` dependency configuration:
-
-```toml
-[dependencies.regex]
-version = "1.3"
-default-features = false
-# Unless you have a specific reason not to, it's good sense to enable standard
-# library support. It enables several optimizations and avoids spin locks. It
-# also shouldn't meaningfully impact compile times or binary size.
-features = ["std"]
-```
-
-This will reduce the dependency tree of `regex` down to two crates:
-`regex-syntax` and `regex-automata`.
+By default, this crate bundles a fairly large amount of Unicode data tables
+(a source size of ~750KB). Because of their large size, one can disable some
+or all of these data tables. If a regular expression attempts to use Unicode
+data that is not available, then an error will occur when translating the `Ast`
+to the `Hir`.
 
 The full set of features one can disable are
-[in the "Crate features" section of the documentation](https://docs.rs/regex/1.*/#crate-features).
+[in the "Crate features" section of the documentation](https://docs.rs/regex-syntax/*/#crate-features).
 
 
-### Minimum Rust version policy
+### Testing
 
-This crate's minimum supported `rustc` version is `1.60.0`.
-
-The policy is that the minimum Rust version required to use this crate can be
-increased in minor version updates. For example, if regex 1.0 requires Rust
-1.20.0, then regex 1.0.z for all values of `z` will also require Rust 1.20.0 or
-newer. However, regex 1.y for `y > 0` may require a newer minimum version of
-Rust.
+Simply running `cargo test` will give you very good coverage. However, because
+of the large number of features exposed by this crate, a `test` script is
+included in this directory which will test several feature combinations. This
+is the same script that is run in CI.
 
 
-### License
+### Motivation
 
-This project is licensed under either of
+The primary purpose of this crate is to provide the parser used by `regex`.
+Specifically, this crate is treated as an implementation detail of the `regex`,
+and is primarily developed for the needs of `regex`.
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   https://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   https://opensource.org/licenses/MIT)
+Since this crate is an implementation detail of `regex`, it may experience
+breaking change releases at a different cadence from `regex`. This is only
+possible because this crate is _not_ a public dependency of `regex`.
 
-at your option.
+Another consequence of this de-coupling is that there is no direct way to
+compile a `regex::Regex` from a `regex_syntax::hir::Hir`. Instead, one must
+first convert the `Hir` to a string (via its `std::fmt::Display`) and then
+compile that via `Regex::new`. While this does repeat some work, compilation
+typically takes much longer than parsing.
 
-The data in `regex-syntax/src/unicode_tables/` is licensed under the Unicode
-License Agreement
-([LICENSE-UNICODE](https://www.unicode.org/copyright.html#License)).
+Stated differently, the coupling between `regex` and `regex-syntax` exists only
+at the level of the concrete syntax.
